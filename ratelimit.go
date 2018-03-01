@@ -34,6 +34,12 @@ type (
 		io.ReadWriter
 		cancel chan struct{}
 	}
+
+	// rlConn is a rate-limiting wrapper for the net.Conn interface.
+	rlConn struct {
+		net.Conn
+		rlrw rlReadWriter
+	}
 )
 
 // NewRLReadWriter wraps a io.ReadWriter into a rlReadWriter.
@@ -46,10 +52,13 @@ func NewRLReadWriter(rw io.ReadWriter, cancel chan struct{}) io.ReadWriter {
 
 // NewRLConn wrap a net.Conn into a rlReadWriter.
 func NewRLConn(conn net.Conn, cancel chan struct{}) net.Conn {
-	return (io.ReadWriter)(&rlReadWriter{
-		conn,
-		cancel,
-	}).(net.Conn)
+	return &rlConn{
+		Conn: conn,
+		rlrw: rlReadWriter{
+			ReadWriter: conn,
+			cancel:     cancel,
+		},
+	}
 }
 
 // SetLimits sets new limits for the global rate limiter.
@@ -58,6 +67,12 @@ func SetLimits(readBPS, writeBPS int64, packetSize uint64) {
 	atomic.StoreInt64(&rl.atomicWriteBPS, writeBPS)
 	atomic.StoreUint64(&rl.atomicPacketSize, packetSize)
 }
+
+// Read is a pass-through to the rlReadWriter's rate-limited Read method.
+func (c *rlConn) Read(b []byte) (n int, err error) { return c.rlrw.Read(b) }
+
+// Write is a pass-through to the rlReadWriter's rate-limited Read method.
+func (c *rlConn) Write(b []byte) (n int, err error) { return c.rlrw.Write(b) }
 
 // Read reads from the underlying readWriter with the maximum possible speed
 // allowed by the rateLimit.
