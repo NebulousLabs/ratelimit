@@ -9,47 +9,21 @@ import (
 	"time"
 )
 
-// rl is the global rate limit object.
-var rl rateLimit
+// rl declares the global rate limit for read and write operations
+// on a io.ReadWriter. Whenever a caller wants to read or write, they have
+// to wait until readBlock/writeBlock to start the actual read or write
+// operation. Each caller also pushes these timestamps into the future to
+// prevent other callers to read or write prematurely.
+var rl struct {
+	atomicPacketSize uint64 // the maximum amount of data a caller can read/write at once
+	atomicWriteBPS   int64  // the bytes per second that can be written.
+	atomicReadBPS    int64  // the bytes per second that can be read.
 
-type (
-	// rateLimit declares the global rate limit for read and write operations
-	// on a io.ReadWriter. Whenever a caller wants to read or write, they have
-	// to wait until readBlock/writeBlock to start the actual read or write
-	// operation. Each caller also pushes these timestamps into the future to
-	// prevent other callers to read or write prematurely.
-	rateLimit struct {
-		atomicPacketSize uint64 // the maximum amount of data a caller can read/write at once
-		atomicWriteBPS   int64  // the bytes per second that can be written.
-		atomicReadBPS    int64  // the bytes per second that can be read.
+	wmu        sync.Mutex // locks writeBlock.
+	writeBlock time.Time  // timestamp before which no new write can start.
 
-		wmu        sync.Mutex // locks writeBlock.
-		writeBlock time.Time  // timestamp before which no new write can start.
-
-		rmu       sync.Mutex // locks readBlock.
-		readBlock time.Time  // timestamp before which no new read can start.
-	}
-	// rlReadWriter is a simple wrapper for the io.ReadWriter interface.
-	rlReadWriter struct {
-		io.ReadWriter
-		cancel chan struct{}
-	}
-)
-
-// NewRLReadWriter wraps a io.ReadWriter into a rlReadWriter.
-func NewRLReadWriter(rw io.ReadWriter, cancel chan struct{}) io.ReadWriter {
-	return &rlReadWriter{
-		rw,
-		cancel,
-	}
-}
-
-// NewRLConn wrap a net.Conn into a rlReadWriter.
-func NewRLConn(conn net.Conn, cancel chan struct{}) net.Conn {
-	return (io.ReadWriter)(&rlReadWriter{
-		conn,
-		cancel,
-	}).(net.Conn)
+	rmu       sync.Mutex // locks readBlock.
+	readBlock time.Time  // timestamp before which no new read can start.
 }
 
 // SetLimits sets new limits for the global rate limiter.
@@ -58,6 +32,45 @@ func SetLimits(readBPS, writeBPS int64, packetSize uint64) {
 	atomic.StoreInt64(&rl.atomicWriteBPS, writeBPS)
 	atomic.StoreUint64(&rl.atomicPacketSize, packetSize)
 }
+
+type (
+	// rlReadWriter is a rate-limiting wrapper for the io.ReadWriter interface.
+	rlReadWriter struct {
+		io.ReadWriter
+		cancel chan struct{}
+	}
+
+	// rlConn is a rate-limiting wrapper for the net.Conn interface.
+	rlConn struct {
+		net.Conn
+		rlrw rlReadWriter
+	}
+)
+
+// NewRLReadWriter wraps a io.ReadWriter into a rlReadWriter.
+func NewRLReadWriter(rw io.ReadWriter, cancel chan struct{}) io.ReadWriter {
+	return &rlReadWriter{
+		ReadWriter: rw,
+		cancel:     cancel,
+	}
+}
+
+// NewRLConn wrap a net.Conn into a rlReadWriter.
+func NewRLConn(conn net.Conn, cancel chan struct{}) net.Conn {
+	return &rlConn{
+		Conn: conn,
+		rlrw: rlReadWriter{
+			ReadWriter: conn,
+			cancel:     cancel,
+		},
+	}
+}
+
+// Read is a pass-through to the rlReadWriter's rate-limited Read method.
+func (c *rlConn) Read(b []byte) (n int, err error) { return c.rlrw.Read(b) }
+
+// Write is a pass-through to the rlReadWriter's rate-limited Read method.
+func (c *rlConn) Write(b []byte) (n int, err error) { return c.rlrw.Write(b) }
 
 // Read reads from the underlying readWriter with the maximum possible speed
 // allowed by the rateLimit.
