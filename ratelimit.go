@@ -9,27 +9,32 @@ import (
 	"time"
 )
 
-// rl is the global rate limit object.
-var rl rateLimit
+// rl declares the global rate limit for read and write operations
+// on a io.ReadWriter. Whenever a caller wants to read or write, they have
+// to wait until readBlock/writeBlock to start the actual read or write
+// operation. Each caller also pushes these timestamps into the future to
+// prevent other callers to read or write prematurely.
+var rl struct {
+	atomicPacketSize uint64 // the maximum amount of data a caller can read/write at once
+	atomicWriteBPS   int64  // the bytes per second that can be written.
+	atomicReadBPS    int64  // the bytes per second that can be read.
+
+	wmu        sync.Mutex // locks writeBlock.
+	writeBlock time.Time  // timestamp before which no new write can start.
+
+	rmu       sync.Mutex // locks readBlock.
+	readBlock time.Time  // timestamp before which no new read can start.
+}
+
+// SetLimits sets new limits for the global rate limiter.
+func SetLimits(readBPS, writeBPS int64, packetSize uint64) {
+	atomic.StoreInt64(&rl.atomicReadBPS, readBPS)
+	atomic.StoreInt64(&rl.atomicWriteBPS, writeBPS)
+	atomic.StoreUint64(&rl.atomicPacketSize, packetSize)
+}
 
 type (
-	// rateLimit declares the global rate limit for read and write operations
-	// on a io.ReadWriter. Whenever a caller wants to read or write, they have
-	// to wait until readBlock/writeBlock to start the actual read or write
-	// operation. Each caller also pushes these timestamps into the future to
-	// prevent other callers to read or write prematurely.
-	rateLimit struct {
-		atomicPacketSize uint64 // the maximum amount of data a caller can read/write at once
-		atomicWriteBPS   int64  // the bytes per second that can be written.
-		atomicReadBPS    int64  // the bytes per second that can be read.
-
-		wmu        sync.Mutex // locks writeBlock.
-		writeBlock time.Time  // timestamp before which no new write can start.
-
-		rmu       sync.Mutex // locks readBlock.
-		readBlock time.Time  // timestamp before which no new read can start.
-	}
-	// rlReadWriter is a simple wrapper for the io.ReadWriter interface.
+	// rlReadWriter is a rate-limiting wrapper for the io.ReadWriter interface.
 	rlReadWriter struct {
 		io.ReadWriter
 		cancel chan struct{}
@@ -45,8 +50,8 @@ type (
 // NewRLReadWriter wraps a io.ReadWriter into a rlReadWriter.
 func NewRLReadWriter(rw io.ReadWriter, cancel chan struct{}) io.ReadWriter {
 	return &rlReadWriter{
-		rw,
-		cancel,
+		ReadWriter: rw,
+		cancel:     cancel,
 	}
 }
 
@@ -59,13 +64,6 @@ func NewRLConn(conn net.Conn, cancel chan struct{}) net.Conn {
 			cancel:     cancel,
 		},
 	}
-}
-
-// SetLimits sets new limits for the global rate limiter.
-func SetLimits(readBPS, writeBPS int64, packetSize uint64) {
-	atomic.StoreInt64(&rl.atomicReadBPS, readBPS)
-	atomic.StoreInt64(&rl.atomicWriteBPS, writeBPS)
-	atomic.StoreUint64(&rl.atomicPacketSize, packetSize)
 }
 
 // Read is a pass-through to the rlReadWriter's rate-limited Read method.
