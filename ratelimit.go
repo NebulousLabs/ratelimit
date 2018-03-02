@@ -37,7 +37,7 @@ type (
 	// rlReadWriter is a rate-limiting wrapper for the io.ReadWriter interface.
 	rlReadWriter struct {
 		io.ReadWriter
-		cancel chan struct{}
+		cancel <-chan struct{}
 	}
 
 	// rlConn is a rate-limiting wrapper for the net.Conn interface.
@@ -48,7 +48,7 @@ type (
 )
 
 // NewRLReadWriter wraps a io.ReadWriter into a rlReadWriter.
-func NewRLReadWriter(rw io.ReadWriter, cancel chan struct{}) io.ReadWriter {
+func NewRLReadWriter(rw io.ReadWriter, cancel <-chan struct{}) io.ReadWriter {
 	return &rlReadWriter{
 		ReadWriter: rw,
 		cancel:     cancel,
@@ -56,7 +56,7 @@ func NewRLReadWriter(rw io.ReadWriter, cancel chan struct{}) io.ReadWriter {
 }
 
 // NewRLConn wrap a net.Conn into a rlReadWriter.
-func NewRLConn(conn net.Conn, cancel chan struct{}) net.Conn {
+func NewRLConn(conn net.Conn, cancel <-chan struct{}) net.Conn {
 	return &rlConn{
 		Conn: conn,
 		rlrw: rlReadWriter{
@@ -77,7 +77,7 @@ func (c *rlConn) Write(b []byte) (n int, err error) { return c.rlrw.Write(b) }
 func (l *rlReadWriter) Read(b []byte) (n int, err error) {
 	packetSize := atomic.LoadUint64(&rl.atomicPacketSize)
 	if packetSize == 0 {
-		l.readPacket(b)
+		return l.readPacket(b)
 	}
 	for len(b) > 0 {
 		var data []byte
@@ -106,7 +106,7 @@ func (l *rlReadWriter) Read(b []byte) (n int, err error) {
 func (l *rlReadWriter) Write(b []byte) (n int, err error) {
 	packetSize := atomic.LoadUint64(&rl.atomicPacketSize)
 	if packetSize == 0 {
-		l.writePacket(b)
+		return l.writePacket(b)
 	}
 	for len(b) > 0 {
 		var data []byte
