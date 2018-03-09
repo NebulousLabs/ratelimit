@@ -13,7 +13,7 @@ func TestRLSimpleWriteRead(t *testing.T) {
 	// Set limits
 	packetSize := uint64(64)
 	bps := int64(1000)
-	SetLimits(bps, bps, packetSize)
+	rl := NewRateLimit(bps, bps, packetSize)
 
 	// Create a io.ReadWriter.
 	rw := bytes.NewBuffer(make([]byte, 0))
@@ -21,7 +21,7 @@ func TestRLSimpleWriteRead(t *testing.T) {
 	// Wrap it into a rate limited ReadWriter.
 	c := make(chan struct{})
 	defer close(c)
-	rlc := NewRLReadWriter(rw, c)
+	rlc := NewRLReadWriter(rw, rl, c)
 
 	// Create 1mb to write.
 	data := fastrand.Bytes(1000)
