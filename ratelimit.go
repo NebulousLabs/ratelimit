@@ -9,37 +9,30 @@ import (
 	"time"
 )
 
-// rl declares the global rate limit for read and write operations
-// on a io.ReadWriter. Whenever a caller wants to read or write, they have
-// to wait until readBlock/writeBlock to start the actual read or write
-// operation. Each caller also pushes these timestamps into the future to
-// prevent other callers to read or write prematurely.
-var rl struct {
-	atomicPacketSize uint64 // the maximum amount of data a caller can read/write at once
-	atomicWriteBPS   int64  // the bytes per second that can be written.
-	atomicReadBPS    int64  // the bytes per second that can be read.
-
-	wmu        sync.Mutex // locks writeBlock.
-	writeBlock time.Time  // timestamp before which no new write can start.
-
-	rmu       sync.Mutex // locks readBlock.
-	readBlock time.Time  // timestamp before which no new read can start.
-}
-
-// SetLimits sets new limits for the global rate limiter.
-func SetLimits(readBPS, writeBPS int64, packetSize uint64) {
-	atomic.StoreInt64(&rl.atomicReadBPS, readBPS)
-	atomic.StoreInt64(&rl.atomicWriteBPS, writeBPS)
-	atomic.StoreUint64(&rl.atomicPacketSize, packetSize)
-}
-
 type (
+	// rateLimit declares the global rate limit for read and write operations
+	// on a io.ReadWriter. Whenever a caller wants to read or write, they have
+	// to wait until readBlock/writeBlock to start the actual read or write
+	// operation. Each caller also pushes these timestamps into the future to
+	// prevent other callers to read or write prematurely.
+	RateLimit struct {
+		atomicPacketSize uint64 // the maximum amount of data a caller can read/write at once
+		atomicWriteBPS   int64  // the bytes per second that can be written.
+		atomicReadBPS    int64  // the bytes per second that can be read.
+
+		wmu        sync.Mutex // locks writeBlock.
+		writeBlock time.Time  // timestamp before which no new write can start.
+
+		rmu       sync.Mutex // locks readBlock.
+		readBlock time.Time  // timestamp before which no new read can start.
+	}
+
 	// rlReadWriter is a rate-limiting wrapper for the io.ReadWriter interface.
 	rlReadWriter struct {
 		io.ReadWriter
+		rl     *RateLimit
 		cancel <-chan struct{}
 	}
-
 	// rlConn is a rate-limiting wrapper for the net.Conn interface.
 	rlConn struct {
 		net.Conn
@@ -47,23 +40,42 @@ type (
 	}
 )
 
+// NewRateLimit creates a new rateLimit object that can be used to initialize
+// rate-limited readers and writers.
+func NewRateLimit(readBPS, writeBPS int64, packetSize uint64) *RateLimit {
+	return &RateLimit{
+		atomicPacketSize: packetSize,
+		atomicWriteBPS:   writeBPS,
+		atomicReadBPS:    readBPS,
+	}
+}
+
 // NewRLReadWriter wraps a io.ReadWriter into a rlReadWriter.
-func NewRLReadWriter(rw io.ReadWriter, cancel <-chan struct{}) io.ReadWriter {
+func NewRLReadWriter(rw io.ReadWriter, rl *RateLimit, cancel <-chan struct{}) io.ReadWriter {
 	return &rlReadWriter{
-		ReadWriter: rw,
-		cancel:     cancel,
+		rw,
+		rl,
+		cancel,
 	}
 }
 
 // NewRLConn wrap a net.Conn into a rlReadWriter.
-func NewRLConn(conn net.Conn, cancel <-chan struct{}) net.Conn {
+func NewRLConn(conn net.Conn, rl *RateLimit, cancel <-chan struct{}) net.Conn {
 	return &rlConn{
 		Conn: conn,
 		rlrw: rlReadWriter{
 			ReadWriter: conn,
+			rl:         rl,
 			cancel:     cancel,
 		},
 	}
+}
+
+// SetLimits sets new limits for the global rate limiter.
+func (rl *RateLimit) SetLimits(readBPS, writeBPS int64, packetSize uint64) {
+	atomic.StoreInt64(&rl.atomicReadBPS, readBPS)
+	atomic.StoreInt64(&rl.atomicWriteBPS, writeBPS)
+	atomic.StoreUint64(&rl.atomicPacketSize, packetSize)
 }
 
 // Read is a pass-through to the rlReadWriter's rate-limited Read method.
@@ -75,7 +87,7 @@ func (c *rlConn) Write(b []byte) (n int, err error) { return c.rlrw.Write(b) }
 // Read reads from the underlying readWriter with the maximum possible speed
 // allowed by the rateLimit.
 func (l *rlReadWriter) Read(b []byte) (n int, err error) {
-	packetSize := atomic.LoadUint64(&rl.atomicPacketSize)
+	packetSize := atomic.LoadUint64(&l.rl.atomicPacketSize)
 	if packetSize == 0 {
 		return l.readPacket(b)
 	}
@@ -104,7 +116,7 @@ func (l *rlReadWriter) Read(b []byte) (n int, err error) {
 // Write writes to the underlying readWriter with the maximum possible speed
 // allowed by the rateLimit.
 func (l *rlReadWriter) Write(b []byte) (n int, err error) {
-	packetSize := atomic.LoadUint64(&rl.atomicPacketSize)
+	packetSize := atomic.LoadUint64(&l.rl.atomicPacketSize)
 	if packetSize == 0 {
 		return l.writePacket(b)
 	}
@@ -134,6 +146,7 @@ func (l *rlReadWriter) Write(b []byte) (n int, err error) {
 // data.
 func (l *rlReadWriter) readPacket(b []byte) (n int, err error) {
 	// Get the current max bandwidth.
+	rl := l.rl
 	bps := time.Duration(atomic.LoadInt64(&rl.atomicReadBPS))
 
 	// If bps is 0 there is no limit.
@@ -168,6 +181,7 @@ func (l *rlReadWriter) readPacket(b []byte) (n int, err error) {
 // data.
 func (l *rlReadWriter) writePacket(b []byte) (n int, err error) {
 	// Get the current max bandwidth.
+	rl := l.rl
 	bps := time.Duration(atomic.LoadInt64(&rl.atomicWriteBPS))
 
 	// If bps is 0 there is no limit.
