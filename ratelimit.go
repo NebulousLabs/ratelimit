@@ -71,9 +71,12 @@ func NewRLConn(conn net.Conn, rl *RateLimit, cancel <-chan struct{}) net.Conn {
 	}
 }
 
-// GetLimits gets the current limits for the global rate limiter.
-func (rl *RateLimit) GetLimits() (int64, int64, uint64) {
-	return atomic.LoadInt64(&rl.atomicReadBPS), atomic.LoadInt64(&rl.atomicWriteBPS), atomic.LoadUint64(&rl.atomicPacketSize)
+// Limits gets the current limits for the global rate limiter.
+func (rl *RateLimit) Limits() (int64, int64, uint64) {
+	readBPS := atomic.LoadInt64(&rl.atomicReadBPS)
+	writeBPS := atomic.LoadInt64(&rl.atomicWriteBPS)
+	packetSize := atomic.LoadUint64(&rl.atomicPacketSize)
+	return readBPS, writeBPS, packetSize
 }
 
 // SetLimits sets new limits for the global rate limiter.
