@@ -10,7 +10,7 @@ import (
 )
 
 type (
-	// rateLimit declares the global rate limit for read and write operations
+	// RateLimit declares the global rate limit for read and write operations
 	// on a io.ReadWriter. Whenever a caller wants to read or write, they have
 	// to wait until readBlock/writeBlock to start the actual read or write
 	// operation. Each caller also pushes these timestamps into the future to
@@ -69,6 +69,14 @@ func NewRLConn(conn net.Conn, rl *RateLimit, cancel <-chan struct{}) net.Conn {
 			cancel:     cancel,
 		},
 	}
+}
+
+// Limits gets the current limits for the global rate limiter.
+func (rl *RateLimit) Limits() (int64, int64, uint64) {
+	readBPS := atomic.LoadInt64(&rl.atomicReadBPS)
+	writeBPS := atomic.LoadInt64(&rl.atomicWriteBPS)
+	packetSize := atomic.LoadUint64(&rl.atomicPacketSize)
+	return readBPS, writeBPS, packetSize
 }
 
 // SetLimits sets new limits for the global rate limiter.
